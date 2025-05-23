@@ -1,30 +1,31 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:invoice/main.dart';
+import 'package:invoice/screens/splash_logo.dart';
+import 'package:invoice/screens/splash_intro.dart';
+import 'package:invoice/screens/login_screen.dart';
+import 'package:invoice/screens/signup_screen.dart';
+import 'package:invoice/screens/home_screen.dart';
+import 'package:invoice/screens/profile_page.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('App loads splash screen smoke test', (WidgetTester tester) async {
+    await tester.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      initialRoute: '/',
+      routes: {
+        '/': (_) => SplashLogoScreen(),
+        '/intro': (_) => SplashIntroScreen(),
+        '/login': (_) => LoginScreen(),
+        '/signup': (_) => SignupScreen(),
+        '/home': (_) => HomeScreen(),
+        '/profile': (context) => ProfileScreen(),
+      },
+    ));
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // Now you can write test expectations based on SplashLogoScreen contents,
+    // for example check a widget or text that should be visible on splash screen.
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.byType(SplashLogoScreen), findsOneWidget);
   });
 }

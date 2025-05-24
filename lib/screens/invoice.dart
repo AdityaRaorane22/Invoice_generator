@@ -30,7 +30,7 @@ class InvoiceData {
 
 class InvoiceGenerator {
   static const double taxRate = 0.10; // 10% tax rate
-  static const String companyLogo = 'TechServ Solutions';
+  static const String companyLogo = 'Electrolyte Solutions';
   static const String companySlogan = 'Excellence in Technology Services';
 
   Future<String> getNextInvoiceNumber(String companyName, String warrantyStatus) async {

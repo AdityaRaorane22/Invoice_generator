@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
 import 'dart:math';
+import 'package:http/http.dart' as http;
 import 'invoice.dart';
 
 class GenerateInvoiceScreen extends StatefulWidget {
@@ -23,7 +24,7 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
   // Variables
   String _queryId = '';
   String _warrantyStatus = 'Before';
-  Map<String, double> _selectedProduct = {};
+  List<Map<String, dynamic>> _selectedProducts = [];
   bool _showProductSuggestions = false;
   
   // Sample product database
@@ -85,12 +86,56 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
     });
   }
 
-  void _selectProduct(String productName) {
-    _productController.text = productName;
-    _selectedProduct = {productName: _products[productName]!};
+  void _addProduct(String productName) {
+    final price = _products[productName]!;
+    
+    // Check if product already exists
+    final existingIndex = _selectedProducts.indexWhere(
+      (product) => product['name'] == productName
+    );
+    
+    if (existingIndex != -1) {
+      // Increase quantity if product already exists
+      setState(() {
+        _selectedProducts[existingIndex]['quantity']++;
+      });
+    } else {
+      // Add new product
+      setState(() {
+        _selectedProducts.add({
+          'name': productName,
+          'price': price,
+          'quantity': 1,
+        });
+      });
+    }
+    
+    _productController.clear();
     setState(() {
       _showProductSuggestions = false;
     });
+  }
+
+  void _removeProduct(int index) {
+    setState(() {
+      _selectedProducts.removeAt(index);
+    });
+  }
+
+  void _updateQuantity(int index, int quantity) {
+    if (quantity <= 0) {
+      _removeProduct(index);
+    } else {
+      setState(() {
+        _selectedProducts[index]['quantity'] = quantity;
+      });
+    }
+  }
+
+  double _calculateSubtotal() {
+    return _selectedProducts.fold(0.0, (sum, product) => 
+      sum + (product['price'] * product['quantity'])
+    );
   }
 
   Future<void> _generateInvoice() async {
@@ -98,9 +143,9 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
       return;
     }
 
-    if (_selectedProduct.isEmpty) {
+    if (_selectedProducts.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a valid product')),
+        const SnackBar(content: Text('Please add at least one product')),
       );
       return;
     }
@@ -111,18 +156,21 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
         customerName: _customerNameController.text.trim(),
         customerAddress: _customerAddressController.text.trim(),
         companyName: _companyNameController.text.trim(),
-        productName: _selectedProduct.keys.first,
-        productPrice: _selectedProduct.values.first,
+        products: _selectedProducts,
         warrantyStatus: _warrantyStatus,
         generatedDate: DateTime.now(),
       );
 
+      // Generate PDF
       final invoiceGenerator = InvoiceGenerator();
       await invoiceGenerator.generatePDF(invoiceData);
 
+      // Save to MongoDB
+      await _saveInvoiceToDatabase(invoiceData);
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Invoice generated and downloaded successfully!'),
+          content: Text('Invoice generated and saved successfully!'),
           backgroundColor: Colors.green,
         ),
       );
@@ -139,12 +187,44 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
     }
   }
 
+  Future<void> _saveInvoiceToDatabase(InvoiceData invoiceData) async {
+    const String apiUrl = 'http://localhost:3000/api/invoices'; // Replace with your backend URL
+    
+    try {
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({
+          'queryId': invoiceData.queryId,
+          'customerName': invoiceData.customerName,
+          'customerAddress': invoiceData.customerAddress,
+          'companyName': invoiceData.companyName,
+          'products': invoiceData.products,
+          'warrantyStatus': invoiceData.warrantyStatus,
+          'generatedDate': invoiceData.generatedDate.toIso8601String(),
+          'subtotal': _calculateSubtotal(),
+          'taxAmount': _calculateSubtotal() * 0.10,
+          'total': _calculateSubtotal() * 1.10,
+        }),
+      );
+
+      if (response.statusCode != 201) {
+        throw Exception('Failed to save invoice: ${response.body}');
+      }
+    } catch (e) {
+      print('Error saving to database: $e');
+      throw Exception('Failed to save invoice to database');
+    }
+  }
+
   void _clearForm() {
     _customerNameController.clear();
     _customerAddressController.clear();
     _companyNameController.clear();
     _productController.clear();
-    _selectedProduct.clear();
+    _selectedProducts.clear();
     _generateQueryId();
     setState(() {
       _warrantyStatus = 'Before';
@@ -275,17 +355,11 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
                             TextFormField(
                               controller: _productController,
                               decoration: const InputDecoration(
-                                labelText: 'Product Name *',
+                                labelText: 'Add Products *',
                                 prefixIcon: Icon(Icons.inventory),
                                 border: OutlineInputBorder(),
-                                hintText: 'Start typing to search products...',
+                                hintText: 'Start typing to search and add products...',
                               ),
-                              validator: (value) {
-                                if (_selectedProduct.isEmpty) {
-                                  return 'Please select a valid product';
-                                }
-                                return null;
-                              },
                             ),
                             if (_showProductSuggestions) ...[
                               const SizedBox(height: 4),
@@ -305,42 +379,117 @@ class _GenerateInvoiceScreenState extends State<GenerateInvoiceScreen> {
                                     return ListTile(
                                       title: Text(product),
                                       subtitle: Text('\$${price.toStringAsFixed(2)}'),
-                                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                                      onTap: () => _selectProduct(product),
+                                      trailing: IconButton(
+                                        icon: const Icon(Icons.add_circle, color: Colors.green),
+                                        onPressed: () => _addProduct(product),
+                                      ),
                                       dense: true,
                                     );
                                   },
                                 ),
                               ),
                             ],
-                            if (_selectedProduct.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.green.shade50,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: Colors.green.shade300),
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Icon(Icons.check_circle, color: Colors.green),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        'Selected: ${_selectedProduct.keys.first} - \$${_selectedProduct.values.first.toStringAsFixed(2)}',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.green,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
                           ],
                         ),
+                        const SizedBox(height: 16),
+
+                        // Selected Products List
+                        if (_selectedProducts.isNotEmpty) ...[
+                          Text(
+                            'Selected Products',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Container(
+                            constraints: const BoxConstraints(maxHeight: 300),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey.shade300),
+                              borderRadius: BorderRadius.circular(8),
+                              color: Colors.grey.shade50,
+                            ),
+                            child: ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: _selectedProducts.length,
+                              itemBuilder: (context, index) {
+                                final product = _selectedProducts[index];
+                                return ListTile(
+                                  title: Text(product['name']),
+                                  subtitle: Text('\$${product['price'].toStringAsFixed(2)} each'),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.remove, color: Colors.red),
+                                        onPressed: () => _updateQuantity(index, product['quantity'] - 1),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue.shade100,
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: Text(
+                                          '${product['quantity']}',
+                                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.add, color: Colors.green),
+                                        onPressed: () => _updateQuantity(index, product['quantity'] + 1),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.delete, color: Colors.red),
+                                        onPressed: () => _removeProduct(index),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          // Total Summary
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.blue.shade200),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Subtotal:', style: TextStyle(fontSize: 16)),
+                                    Text('\$${_calculateSubtotal().toStringAsFixed(2)}', 
+                                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Tax (10%):', style: TextStyle(fontSize: 16)),
+                                    Text('\$${(_calculateSubtotal() * 0.10).toStringAsFixed(2)}', 
+                                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                  ],
+                                ),
+                                const Divider(),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Total:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                    Text('\$${(_calculateSubtotal() * 1.10).toStringAsFixed(2)}', 
+                                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 24),
 
                         // Warranty Status

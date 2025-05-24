@@ -132,42 +132,225 @@ app.get('/chat-history/:mobile', async (req, res) => {
   }
 });
 
-// Optional: Get all chat data for admin purposes
-app.get('/admin/all-chats', async (req, res) => {
-  try {
-    const allChats = await Chat.find({})
-      .sort({ createdAt: -1 });
-    
-    res.json({ 
-      success: true, 
-      chats: allChats 
-    });
-  } catch (error) {
-    console.error('Error fetching all chats:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch chats' 
-    });
+// Invoice Counter Schema - to track invoice numbers for each company
+const invoiceCounterSchema = new mongoose.Schema({
+  companyName: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  date: {
+    type: String, // Format: DDMMYYYY
+    required: true,
+  },
+  counter: {
+    type: Number,
+    default: 0,
+  },
+  lastUpdated: {
+    type: Date,
+    default: Date.now,
   }
 });
 
-// Optional: Delete chat history for a specific mobile number
-app.delete('/chat-history/:mobile', async (req, res) => {
+// Compound index to ensure uniqueness per company per date
+invoiceCounterSchema.index({ companyName: 1, date: 1 }, { unique: true });
+
+const InvoiceCounter = mongoose.model('InvoiceCounter', invoiceCounterSchema);
+
+// Invoice Schema
+const invoiceSchema = new mongoose.Schema({
+  invoiceNumber: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  queryId: {
+    type: String,
+    required: true,
+  },
+  customerName: {
+    type: String,
+    required: true,
+  },
+  customerAddress: {
+    type: String,
+    required: true,
+  },
+  companyName: {
+    type: String,
+    required: true,
+  },
+  products: [{
+    name: {
+      type: String,
+      required: true,
+    },
+    price: {
+      type: Number,
+      required: true,
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      default: 1,
+    }
+  }],
+  warrantyStatus: {
+    type: String,
+    enum: ['Before', 'After'],
+    required: true,
+  },
+  subtotal: {
+    type: Number,
+    required: true,
+  },
+  taxAmount: {
+    type: Number,
+    required: true,
+  },
+  total: {
+    type: Number,
+    required: true,
+  },
+  generatedDate: {
+    type: Date,
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  }
+});
+
+const Invoice = mongoose.model('Invoice', invoiceSchema);
+
+// Helper function to format date as DDMMYYYY
+function formatDateToDDMMYYYY(date = new Date()) {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0'); // Month is 0-indexed
+  const year = date.getFullYear();
+  return `${day}${month}${year}`;
+}
+
+// Helper function to get next invoice number
+async function getNextInvoiceNumber(companyName) {
+  const today = formatDateToDDMMYYYY();
+  
   try {
-    const mobile = req.params.mobile;
-    
-    const result = await Chat.deleteMany({ mobile: mobile });
-    
-    res.json({ 
-      success: true, 
-      message: `Deleted ${result.deletedCount} chat entries` 
+    // Find or create counter for this company and date
+    let counter = await InvoiceCounter.findOne({ 
+      companyName: companyName,
+      date: today 
     });
+
+    if (!counter) {
+      // Create new counter for this company and date
+      counter = new InvoiceCounter({
+        companyName: companyName,
+        date: today,
+        counter: 1,
+      });
+    } else {
+      // Increment existing counter
+      counter.counter += 1;
+      counter.lastUpdated = new Date();
+    }
+
+    await counter.save();
+
+    // Format invoice number: CompanyName/Date/Counter
+    const paddedCounter = counter.counter.toString().padStart(3, '0');
+    return `${companyName}/${today}/${paddedCounter}`;
+
   } catch (error) {
-    console.error('Error deleting chat history:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to delete chat history' 
+    console.error('Error generating invoice number:', error);
+    throw error;
+  }
+}
+
+// Routes
+
+// Get next invoice number
+app.post('/api/invoices/next-number', async (req, res) => {
+  try {
+    const { companyName } = req.body;
+    
+    if (!companyName) {
+      return res.status(400).json({ error: 'Company name is required' });
+    }
+
+    const invoiceNumber = await getNextInvoiceNumber(companyName);
+    
+    res.json({ invoiceNumber });
+  } catch (error) {
+    console.error('Error getting next invoice number:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new invoice
+app.post('/api/invoices', async (req, res) => {
+  try {
+    const {
+      queryId,
+      customerName,
+      customerAddress,
+      companyName,
+      products,
+      warrantyStatus,
+      generatedDate,
+      subtotal,
+      taxAmount,
+      total
+    } = req.body;
+
+    // Validate required fields
+    if (!queryId || !customerName || !customerAddress || !companyName || !products || !warrantyStatus) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Generate invoice number
+    const invoiceNumber = await getNextInvoiceNumber(companyName);
+
+    // Create new invoice
+    const invoice = new Invoice({
+      invoiceNumber,
+      queryId,
+      customerName,
+      customerAddress,
+      companyName,
+      products,
+      warrantyStatus,
+      subtotal,
+      taxAmount,
+      total,
+      generatedDate: new Date(generatedDate),
     });
+
+    await invoice.save();
+
+    res.status(201).json({
+      message: 'Invoice created successfully',
+      invoice: {
+        id: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        queryId: invoice.queryId,
+        customerName: invoice.customerName,
+        companyName: invoice.companyName,
+        total: invoice.total,
+        createdAt: invoice.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating invoice:', error);
+    
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'Invoice with this number already exists' });
+    }
+    
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

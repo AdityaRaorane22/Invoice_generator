@@ -3,26 +3,28 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:intl/intl.dart';
 import 'dart:typed_data';
 import 'dart:html' as html;
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class InvoiceData {
   final String queryId;
   final String customerName;
   final String customerAddress;
   final String companyName;
-  final String productName;
-  final double productPrice;
+  final List<Map<String, dynamic>> products;
   final String warrantyStatus;
   final DateTime generatedDate;
+  final String? invoiceNumber; // Will be set by backend
 
   InvoiceData({
     required this.queryId,
     required this.customerName,
     required this.customerAddress,
     required this.companyName,
-    required this.productName,
-    required this.productPrice,
+    required this.products,
     required this.warrantyStatus,
     required this.generatedDate,
+    this.invoiceNumber,
   });
 }
 
@@ -31,19 +33,59 @@ class InvoiceGenerator {
   static const String companyLogo = 'TechServ Solutions';
   static const String companySlogan = 'Excellence in Technology Services';
 
+  Future<String> getNextInvoiceNumber(String companyName) async {
+    const String apiUrl = 'http://localhost:3000/api/invoices/next-number'; // Replace with your backend URL
+    
+    try {
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'companyName': companyName}),
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['invoiceNumber'];
+      } else {
+        throw Exception('Failed to get invoice number');
+      }
+    } catch (e) {
+      print('Error getting invoice number: $e');
+      // Fallback to timestamp-based number if API fails
+      final dateStr = DateFormat('ddMMyyyy').format(DateTime.now());
+      return '$companyName/$dateStr/001';
+    }
+  }
+
   Future<void> generatePDF(InvoiceData data) async {
+    // Get invoice number from backend
+    final invoiceNumber = await getNextInvoiceNumber(data.companyName);
+    
     final pdf = pw.Document();
     
     // Calculate totals
-    final subtotal = data.productPrice;
+    final subtotal = data.products.fold(0.0, (sum, product) => 
+      sum + (product['price'] * product['quantity'])
+    );
     final taxAmount = subtotal * taxRate;
     final total = subtotal + taxAmount;
     
     // Format dates
     final dateFormatter = DateFormat('MMMM dd, yyyy');
     final timeFormatter = DateFormat('hh:mm a');
-    final invoiceNumber = 'INV-${DateFormat('yyyyMMdd').format(data.generatedDate)}-${data.queryId.substring(4, 8)}';
 
+    // Split products into chunks that fit on pages
+    const int maxProductsPerPage = 10; // Adjust based on your needs
+    final List<List<Map<String, dynamic>>> productChunks = [];
+    
+    for (int i = 0; i < data.products.length; i += maxProductsPerPage) {
+      final end = (i + maxProductsPerPage < data.products.length) 
+          ? i + maxProductsPerPage 
+          : data.products.length;
+      productChunks.add(data.products.sublist(i, end));
+    }
+
+    // First page with header and first chunk of products
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
@@ -52,26 +94,30 @@ class InvoiceGenerator {
           return [
             // Header Section
             _buildHeader(data, invoiceNumber),
-            pw.SizedBox(height: 30),
+            pw.SizedBox(height: 20),
             
             // Invoice Details Section
             _buildInvoiceDetails(data, dateFormatter, timeFormatter),
-            pw.SizedBox(height: 30),
+            pw.SizedBox(height: 20),
             
             // Customer Information Section
             _buildCustomerInfo(data),
-            pw.SizedBox(height: 30),
+            pw.SizedBox(height: 20),
             
-            // Product Details Table
-            _buildProductTable(data, subtotal, taxAmount, total),
-            pw.SizedBox(height: 30),
+            // First chunk of products
+            _buildProductTableChunk(productChunks[0], true, 
+              productChunks.length == 1 ? subtotal : null,
+              productChunks.length == 1 ? taxAmount : null,
+              productChunks.length == 1 ? total : null,
+              1, productChunks.length),
             
-            // Warranty Information
-            _buildWarrantyInfo(data),
-            pw.SizedBox(height: 30),
-            
-            // Footer with Legal Terms
-            _buildFooter(),
+            // Add warranty info and footer only on last page
+            if (productChunks.length == 1) ...[
+              pw.SizedBox(height: 20),
+              _buildWarrantyInfo(data),
+              pw.SizedBox(height: 20),
+              _buildFooter(),
+            ],
           ];
         },
         footer: (pw.Context context) {
@@ -80,11 +126,48 @@ class InvoiceGenerator {
       ),
     );
 
+    // Additional pages for remaining product chunks
+    for (int i = 1; i < productChunks.length; i++) {
+      final isLastChunk = i == productChunks.length - 1;
+      
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(32),
+          build: (pw.Context context) {
+            return [
+              // Continuation header
+              _buildContinuationHeader(invoiceNumber),
+              pw.SizedBox(height: 20),
+              
+              // Product chunk
+              _buildProductTableChunk(productChunks[i], false,
+                isLastChunk ? subtotal : null,
+                isLastChunk ? taxAmount : null,
+                isLastChunk ? total : null,
+                i + 1, productChunks.length),
+              
+              // Add warranty info and footer only on last page
+              if (isLastChunk) ...[
+                pw.SizedBox(height: 20),
+                _buildWarrantyInfo(data),
+                pw.SizedBox(height: 20),
+                _buildFooter(),
+              ],
+            ];
+          },
+          footer: (pw.Context context) {
+            return _buildPageFooter(context);
+          },
+        ),
+      );
+    }
+
     // Generate PDF bytes
     final Uint8List pdfBytes = await pdf.save();
     
     // Download PDF in web browser
-    await _downloadPDF(pdfBytes, 'Invoice_${invoiceNumber}.pdf');
+    await _downloadPDF(pdfBytes, 'Invoice_$invoiceNumber.pdf');
   }
 
   pw.Widget _buildHeader(InvoiceData data, String invoiceNumber) {
@@ -140,6 +223,38 @@ class InvoiceGenerator {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  pw.Widget _buildContinuationHeader(String invoiceNumber) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(16),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.blue50,
+        border: pw.Border.all(color: PdfColors.blue200, width: 1),
+        borderRadius: pw.BorderRadius.circular(8),
+      ),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        children: [
+          pw.Text(
+            'Invoice Continued',
+            style: pw.TextStyle(
+              fontSize: 20,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.blue800,
+            ),
+          ),
+          pw.Text(
+            invoiceNumber,
+            style: pw.TextStyle(
+              fontSize: 16,
+              color: PdfColors.blue600,
+              fontWeight: pw.FontWeight.bold,
+            ),
           ),
         ],
       ),
@@ -231,17 +346,35 @@ class InvoiceGenerator {
     );
   }
 
-  pw.Widget _buildProductTable(InvoiceData data, double subtotal, double taxAmount, double total) {
+  pw.Widget _buildProductTableChunk(
+    List<Map<String, dynamic>> products, 
+    bool isFirstChunk,
+    double? subtotal,
+    double? taxAmount,
+    double? total,
+    int chunkNumber,
+    int totalChunks,
+  ) {
     return pw.Column(
       children: [
         pw.Text(
-          'Service Details',
+          isFirstChunk ? 'Service Details' : 'Service Details (continued)',
           style: pw.TextStyle(
             fontSize: 18,
             fontWeight: pw.FontWeight.bold,
             color: PdfColors.grey800,
           ),
         ),
+        if (totalChunks > 1) ...[
+          pw.SizedBox(height: 5),
+          pw.Text(
+            'Page $chunkNumber of $totalChunks',
+            style: pw.TextStyle(
+              fontSize: 12,
+              color: PdfColors.grey600,
+            ),
+          ),
+        ],
         pw.SizedBox(height: 10),
         pw.Table(
           border: pw.TableBorder.all(color: PdfColors.grey400, width: 1),
@@ -252,7 +385,7 @@ class InvoiceGenerator {
             3: const pw.FlexColumnWidth(1),
           },
           children: [
-            // Header row
+            // Header row (show on every chunk)
             pw.TableRow(
               decoration: const pw.BoxDecoration(color: PdfColors.blue100),
               children: [
@@ -262,43 +395,47 @@ class InvoiceGenerator {
                 _buildTableCell('Total', isHeader: true),
               ],
             ),
-            // Data row
-            pw.TableRow(
+            // Data rows for this chunk
+            ...products.map((product) => pw.TableRow(
               children: [
-                _buildTableCell(data.productName),
-                _buildTableCell('1'),
-                _buildTableCell('\$${data.productPrice.toStringAsFixed(2)}'),
-                _buildTableCell('\$${subtotal.toStringAsFixed(2)}'),
+                _buildTableCell(product['name']),
+                _buildTableCell('${product['quantity']}'),
+                _buildTableCell('\$${product['price'].toStringAsFixed(2)}'),
+                _buildTableCell('\$${(product['price'] * product['quantity']).toStringAsFixed(2)}'),
               ],
-            ),
-            // Subtotal row
-            pw.TableRow(
-              children: [
-                _buildTableCell(''),
-                _buildTableCell(''),
-                _buildTableCell('Subtotal:', isHeader: true),
-                _buildTableCell('\$${subtotal.toStringAsFixed(2)}', isHeader: true),
-              ],
-            ),
-            // Tax row
-            pw.TableRow(
-              children: [
-                _buildTableCell(''),
-                _buildTableCell(''),
-                _buildTableCell('Tax (10%):', isHeader: true),
-                _buildTableCell('\$${taxAmount.toStringAsFixed(2)}', isHeader: true),
-              ],
-            ),
-            // Total row
-            pw.TableRow(
-              decoration: const pw.BoxDecoration(color: PdfColors.blue50),
-              children: [
-                _buildTableCell(''),
-                _buildTableCell(''),
-                _buildTableCell('TOTAL:', isHeader: true, fontSize: 14),
-                _buildTableCell('\$${total.toStringAsFixed(2)}', isHeader: true, fontSize: 14),
-              ],
-            ),
+            )).toList(),
+            
+            // Add totals only on the last chunk
+            if (subtotal != null && taxAmount != null && total != null) ...[
+              // Subtotal row
+              pw.TableRow(
+                children: [
+                  _buildTableCell(''),
+                  _buildTableCell(''),
+                  _buildTableCell('Subtotal:', isHeader: true),
+                  _buildTableCell('\$${subtotal.toStringAsFixed(2)}', isHeader: true),
+                ],
+              ),
+              // Tax row
+              pw.TableRow(
+                children: [
+                  _buildTableCell(''),
+                  _buildTableCell(''),
+                  _buildTableCell('Tax (10%):', isHeader: true),
+                  _buildTableCell('\$${taxAmount.toStringAsFixed(2)}', isHeader: true),
+                ],
+              ),
+              // Total row
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: PdfColors.blue50),
+                children: [
+                  _buildTableCell(''),
+                  _buildTableCell(''),
+                  _buildTableCell('TOTAL:', isHeader: true, fontSize: 14),
+                  _buildTableCell('\$${total.toStringAsFixed(2)}', isHeader: true, fontSize: 14),
+                ],
+              ),
+            ],
           ],
         ),
       ],

@@ -132,15 +132,18 @@ app.get('/chat-history/:mobile', async (req, res) => {
   }
 });
 
-// Invoice Counter Schema - to track invoice numbers for each company
+// Invoice Counter Schema - Updated to include warranty status
 const invoiceCounterSchema = new mongoose.Schema({
   companyName: {
     type: String,
     required: true,
-    unique: true,
   },
   date: {
     type: String, // Format: DDMMYYYY
+    required: true,
+  },
+  warrantyStatus: {
+    type: String, // 'Before' or 'After'
     required: true,
   },
   counter: {
@@ -153,8 +156,8 @@ const invoiceCounterSchema = new mongoose.Schema({
   }
 });
 
-// Compound index to ensure uniqueness per company per date
-invoiceCounterSchema.index({ companyName: 1, date: 1 }, { unique: true });
+// Compound index to ensure uniqueness per company per date per warranty status
+invoiceCounterSchema.index({ companyName: 1, date: 1, warrantyStatus: 1 }, { unique: true });
 
 const InvoiceCounter = mongoose.model('InvoiceCounter', invoiceCounterSchema);
 
@@ -233,22 +236,29 @@ function formatDateToDDMMYYYY(date = new Date()) {
   return `${day}${month}${year}`;
 }
 
-// Helper function to get next invoice number
-async function getNextInvoiceNumber(companyName) {
+// Helper function to get warranty suffix
+function getWarrantySuffix(warrantyStatus) {
+  return warrantyStatus === 'Before' ? 'bw' : 'aw';
+}
+
+// Helper function to get next invoice number with warranty status
+async function getNextInvoiceNumber(companyName, warrantyStatus) {
   const today = formatDateToDDMMYYYY();
   
   try {
-    // Find or create counter for this company and date
+    // Find or create counter for this company, date, and warranty status
     let counter = await InvoiceCounter.findOne({ 
       companyName: companyName,
-      date: today 
+      date: today,
+      warrantyStatus: warrantyStatus
     });
 
     if (!counter) {
-      // Create new counter for this company and date
+      // Create new counter for this company, date, and warranty status
       counter = new InvoiceCounter({
         companyName: companyName,
         date: today,
+        warrantyStatus: warrantyStatus,
         counter: 1,
       });
     } else {
@@ -259,9 +269,10 @@ async function getNextInvoiceNumber(companyName) {
 
     await counter.save();
 
-    // Format invoice number: CompanyName/Date/Counter
+    // Format invoice number: CompanyName/Date/Counter/WarrantyStatus
     const paddedCounter = counter.counter.toString().padStart(3, '0');
-    return `${companyName}/${today}/${paddedCounter}`;
+    const warrantySuffix = getWarrantySuffix(warrantyStatus);
+    return `${companyName}/${today}/${paddedCounter}/${warrantySuffix}`;
 
   } catch (error) {
     console.error('Error generating invoice number:', error);
@@ -271,16 +282,16 @@ async function getNextInvoiceNumber(companyName) {
 
 // Routes
 
-// Get next invoice number
+// Get next invoice number - Updated to include warranty status
 app.post('/api/invoices/next-number', async (req, res) => {
   try {
-    const { companyName } = req.body;
+    const { companyName, warrantyStatus } = req.body;
     
-    if (!companyName) {
-      return res.status(400).json({ error: 'Company name is required' });
+    if (!companyName || !warrantyStatus) {
+      return res.status(400).json({ error: 'Company name and warranty status are required' });
     }
 
-    const invoiceNumber = await getNextInvoiceNumber(companyName);
+    const invoiceNumber = await getNextInvoiceNumber(companyName, warrantyStatus);
     
     res.json({ invoiceNumber });
   } catch (error) {
@@ -289,7 +300,7 @@ app.post('/api/invoices/next-number', async (req, res) => {
   }
 });
 
-// Create new invoice
+// Create new invoice - Updated to use warranty status in invoice number generation
 app.post('/api/invoices', async (req, res) => {
   try {
     const {
@@ -310,8 +321,8 @@ app.post('/api/invoices', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Generate invoice number
-    const invoiceNumber = await getNextInvoiceNumber(companyName);
+    // Generate invoice number with warranty status
+    const invoiceNumber = await getNextInvoiceNumber(companyName, warrantyStatus);
 
     // Create new invoice
     const invoice = new Invoice({
@@ -338,6 +349,7 @@ app.post('/api/invoices', async (req, res) => {
         queryId: invoice.queryId,
         customerName: invoice.customerName,
         companyName: invoice.companyName,
+        warrantyStatus: invoice.warrantyStatus,
         total: invoice.total,
         createdAt: invoice.createdAt
       }

@@ -33,14 +33,17 @@ class InvoiceGenerator {
   static const String companyLogo = 'TechServ Solutions';
   static const String companySlogan = 'Excellence in Technology Services';
 
-  Future<String> getNextInvoiceNumber(String companyName) async {
+  Future<String> getNextInvoiceNumber(String companyName, String warrantyStatus) async {
     const String apiUrl = 'http://localhost:3000/api/invoices/next-number'; // Replace with your backend URL
     
     try {
       final response = await http.post(
         Uri.parse(apiUrl),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'companyName': companyName}),
+        body: json.encode({
+          'companyName': companyName,
+          'warrantyStatus': warrantyStatus
+        }),
       );
       
       if (response.statusCode == 200) {
@@ -53,22 +56,77 @@ class InvoiceGenerator {
       print('Error getting invoice number: $e');
       // Fallback to timestamp-based number if API fails
       final dateStr = DateFormat('ddMMyyyy').format(DateTime.now());
-      return '$companyName/$dateStr/001';
+      final warrantySuffix = warrantyStatus == 'Before' ? 'bw' : 'aw';
+      return '$companyName/$dateStr/001/$warrantySuffix';
+    }
+  }
+
+  Future<Map<String, dynamic>> saveInvoiceToDatabase(
+    InvoiceData data, 
+    String invoiceNumber,
+    double subtotal,
+    double taxAmount,
+    double total
+  ) async {
+    const String apiUrl = 'http://localhost:3000/api/invoices';
+    
+    try {
+      final response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'invoiceNumber': invoiceNumber,
+          'queryId': data.queryId,
+          'customerName': data.customerName,
+          'customerAddress': data.customerAddress,
+          'companyName': data.companyName,
+          'products': data.products,
+          'warrantyStatus': data.warrantyStatus,
+          'generatedDate': data.generatedDate.toIso8601String(),
+          'subtotal': subtotal,
+          'taxAmount': taxAmount,
+          'total': total,
+        }),
+      );
+      
+      if (response.statusCode == 201) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'invoice': responseData['invoice']
+        };
+      } else {
+        throw Exception('Failed to save invoice');
+      }
+    } catch (e) {
+      print('Error saving invoice: $e');
+      return {
+        'success': false,
+        'error': e.toString()
+      };
     }
   }
 
   Future<void> generatePDF(InvoiceData data) async {
-    // Get invoice number from backend
-    final invoiceNumber = await getNextInvoiceNumber(data.companyName);
-    
-    final pdf = pw.Document();
-    
-    // Calculate totals
+    // Calculate totals first
     final subtotal = data.products.fold(0.0, (sum, product) => 
       sum + (product['price'] * product['quantity'])
     );
     final taxAmount = subtotal * taxRate;
     final total = subtotal + taxAmount;
+
+    // Get invoice number from backend
+    final invoiceNumber = await getNextInvoiceNumber(data.companyName, data.warrantyStatus);
+    
+    // Save invoice to database
+    final saveResult = await saveInvoiceToDatabase(data, invoiceNumber, subtotal, taxAmount, total);
+    
+    if (!saveResult['success']) {
+      print('Warning: Failed to save invoice to database: ${saveResult['error']}');
+      // Continue with PDF generation even if database save fails
+    }
+    
+    final pdf = pw.Document();
     
     // Format dates
     final dateFormatter = DateFormat('MMMM dd, yyyy');
@@ -97,7 +155,7 @@ class InvoiceGenerator {
             pw.SizedBox(height: 20),
             
             // Invoice Details Section
-            _buildInvoiceDetails(data, dateFormatter, timeFormatter),
+            _buildInvoiceDetails(data, invoiceNumber, dateFormatter, timeFormatter),
             pw.SizedBox(height: 20),
             
             // Customer Information Section
@@ -166,8 +224,11 @@ class InvoiceGenerator {
     // Generate PDF bytes
     final Uint8List pdfBytes = await pdf.save();
     
+    // Create filename with invoice number (replace / with _ for filename)
+    final fileName = 'Invoice_${invoiceNumber.replaceAll('/', '_')}.pdf';
+    
     // Download PDF in web browser
-    await _downloadPDF(pdfBytes, 'Invoice_$invoiceNumber.pdf');
+    await _downloadPDF(pdfBytes, fileName);
   }
 
   pw.Widget _buildHeader(InvoiceData data, String invoiceNumber) {
@@ -214,12 +275,19 @@ class InvoiceGenerator {
                   color: PdfColors.blue800,
                 ),
               ),
-              pw.Text(
-                invoiceNumber,
-                style: pw.TextStyle(
-                  fontSize: 14,
-                  color: PdfColors.blue600,
-                  fontWeight: pw.FontWeight.bold,
+              pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.blue100,
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Text(
+                  invoiceNumber,
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    color: PdfColors.blue800,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
                 ),
               ),
             ],
@@ -248,12 +316,19 @@ class InvoiceGenerator {
               color: PdfColors.blue800,
             ),
           ),
-          pw.Text(
-            invoiceNumber,
-            style: pw.TextStyle(
-              fontSize: 16,
-              color: PdfColors.blue600,
-              fontWeight: pw.FontWeight.bold,
+          pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: pw.BoxDecoration(
+              color: PdfColors.blue100,
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Text(
+              invoiceNumber,
+              style: pw.TextStyle(
+                fontSize: 14,
+                color: PdfColors.blue800,
+                fontWeight: pw.FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -261,46 +336,119 @@ class InvoiceGenerator {
     );
   }
 
-  pw.Widget _buildInvoiceDetails(InvoiceData data, DateFormat dateFormatter, DateFormat timeFormatter) {
+  pw.Widget _buildInvoiceDetails(InvoiceData data, String invoiceNumber, DateFormat dateFormatter, DateFormat timeFormatter) {
+    // Parse invoice number to show formatted details
+    final parts = invoiceNumber.split('/');
+    String formattedInvoiceNumber = invoiceNumber;
+    String warrantyText = '';
+    
+    if (parts.length >= 4) {
+      final company = parts[0];
+      final date = parts[1];
+      final counter = parts[2];
+      final warrantySuffix = parts[3];
+      
+      // Format date from DDMMYYYY to DD/MM/YYYY
+      if (date.length == 8) {
+        final formattedDate = '${date.substring(0, 2)}/${date.substring(2, 4)}/${date.substring(4, 8)}';
+        formattedInvoiceNumber = '$company/$formattedDate/$counter/$warrantySuffix';
+      }
+      
+      warrantyText = warrantySuffix == 'bw' ? 'Before Warranty' : 'After Warranty';
+    }
+
     return pw.Container(
       padding: const pw.EdgeInsets.all(16),
       decoration: pw.BoxDecoration(
         border: pw.Border.all(color: PdfColors.grey300),
         borderRadius: pw.BorderRadius.circular(8),
       ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      child: pw.Column(
         children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
             children: [
-              pw.Text(
-                'Invoice Details',
-                style: pw.TextStyle(
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
-                  color: PdfColors.grey800,
-                ),
+              pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(
+                    'Invoice Details',
+                    style: pw.TextStyle(
+                      fontSize: 16,
+                      fontWeight: pw.FontWeight.bold,
+                      color: PdfColors.grey800,
+                    ),
+                  ),
+                  pw.SizedBox(height: 8),
+                  pw.Text('Query ID: ${data.queryId}'),
+                  pw.Text('Service Provider: ${data.companyName}'),
+                  if (warrantyText.isNotEmpty)
+                    pw.Container(
+                      margin: const pw.EdgeInsets.only(top: 4),
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: pw.BoxDecoration(
+                        color: data.warrantyStatus == 'Before' ? PdfColors.green100 : PdfColors.orange100,
+                        borderRadius: pw.BorderRadius.circular(4),
+                      ),
+                      child: pw.Text(
+                        warrantyText,
+                        style: pw.TextStyle(
+                          fontSize: 10,
+                          color: data.warrantyStatus == 'Before' ? PdfColors.green800 : PdfColors.orange800,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
               ),
-              pw.SizedBox(height: 8),
-              pw.Text('Query ID: ${data.queryId}'),
-              pw.Text('Service Provider: ${data.companyName}'),
+              pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.end,
+                children: [
+                  pw.Text(
+                    'Generated On',
+                    style: pw.TextStyle(
+                      fontSize: 16,
+                      fontWeight: pw.FontWeight.bold,
+                      color: PdfColors.grey800,
+                    ),
+                  ),
+                  pw.SizedBox(height: 8),
+                  pw.Text('Date: ${dateFormatter.format(data.generatedDate)}'),
+                  pw.Text('Time: ${timeFormatter.format(data.generatedDate)}'),
+                ],
+              ),
             ],
           ),
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.end,
+          pw.SizedBox(height: 12),
+          pw.Divider(color: PdfColors.grey300),
+          pw.SizedBox(height: 8),
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.center,
             children: [
               pw.Text(
-                'Generated On',
+                'Invoice Number: ',
                 style: pw.TextStyle(
-                  fontSize: 16,
+                  fontSize: 14,
                   fontWeight: pw.FontWeight.bold,
-                  color: PdfColors.grey800,
+                  color: PdfColors.grey700,
                 ),
               ),
-              pw.SizedBox(height: 8),
-              pw.Text('Date: ${dateFormatter.format(data.generatedDate)}'),
-              pw.Text('Time: ${timeFormatter.format(data.generatedDate)}'),
+              pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.blue50,
+                  border: pw.Border.all(color: PdfColors.blue200),
+                  borderRadius: pw.BorderRadius.circular(6),
+                ),
+                child: pw.Text(
+                  formattedInvoiceNumber,
+                  style: pw.TextStyle(
+                    fontSize: 14,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.blue800,
+                  ),
+                ),
+              ),
             ],
           ),
         ],
@@ -452,61 +600,63 @@ class InvoiceGenerator {
           fontWeight: isHeader ? pw.FontWeight.bold : pw.FontWeight.normal,
           color: isHeader ? PdfColors.grey800 : PdfColors.grey700,
         ),
-        textAlign: isHeader ? pw.TextAlign.center : pw.TextAlign.left,
+        textAlign: pw.TextAlign.center,
       ),
     );
   }
 
   pw.Widget _buildWarrantyInfo(InvoiceData data) {
     final warrantyColor = data.warrantyStatus == 'Before' ? PdfColors.green : PdfColors.orange;
-    final warrantyIcon = data.warrantyStatus == 'Before' ? '✓' : '⚠';
+    final warrantyColorLight = data.warrantyStatus == 'Before' ? PdfColors.green100 : PdfColors.orange100;
     
     return pw.Container(
+      width: double.infinity,
       padding: const pw.EdgeInsets.all(16),
       decoration: pw.BoxDecoration(
-        color: data.warrantyStatus == 'Before' ? PdfColors.green50 : PdfColors.orange50,
-        border: pw.Border.all(color: warrantyColor, width: 2),
+        color: warrantyColorLight,
+        border: pw.Border.all(color: warrantyColor, width: 1),
         borderRadius: pw.BorderRadius.circular(8),
       ),
-      child: pw.Row(
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text(
-            warrantyIcon,
-            style: pw.TextStyle(
-              fontSize: 20,
-              color: warrantyColor,
-            ),
-          ),
-          pw.SizedBox(width: 10),
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
+          pw.Row(
             children: [
+              pw.Container(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: pw.BoxDecoration(
+                  color: warrantyColor,
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Text(
+                  'WARRANTY STATUS',
+                  style: pw.TextStyle(
+                    fontSize: 10,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                ),
+              ),
+              pw.SizedBox(width: 10),
               pw.Text(
-                'Warranty Status',
+                '${data.warrantyStatus} Warranty Service',
                 style: pw.TextStyle(
                   fontSize: 14,
                   fontWeight: pw.FontWeight.bold,
                   color: warrantyColor,
                 ),
               ),
-              pw.Text(
-                '${data.warrantyStatus} Warranty Period',
-                style: pw.TextStyle(
-                  fontSize: 12,
-                  color: warrantyColor,
-                ),
-              ),
-              if (data.warrantyStatus == 'Before')
-                pw.Text(
-                  'Service covered under manufacturer warranty',
-                  style: const pw.TextStyle(fontSize: 10),
-                )
-              else
-                pw.Text(
-                  'Service performed after warranty expiration',
-                  style: const pw.TextStyle(fontSize: 10),
-                ),
             ],
+          ),
+          pw.SizedBox(height: 8),
+          pw.Text(
+            data.warrantyStatus == 'Before' 
+                ? 'This service is covered under warranty terms and conditions.'
+                : 'This service is provided after warranty expiration and may include additional charges.',
+            style: pw.TextStyle(
+              fontSize: 11,
+              color: PdfColors.grey700,
+            ),
           ),
         ],
       ),
@@ -515,51 +665,38 @@ class InvoiceGenerator {
 
   pw.Widget _buildFooter() {
     return pw.Container(
-      padding: const pw.EdgeInsets.all(16),
+      width: double.infinity,
+      padding: const pw.EdgeInsets.all(20),
       decoration: pw.BoxDecoration(
         color: PdfColors.grey100,
         border: pw.Border.all(color: PdfColors.grey300),
         borderRadius: pw.BorderRadius.circular(8),
       ),
       child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        crossAxisAlignment: pw.CrossAxisAlignment.center,
         children: [
           pw.Text(
-            'Terms and Conditions',
+            'Thank you for your business!',
             style: pw.TextStyle(
-              fontSize: 14,
+              fontSize: 16,
               fontWeight: pw.FontWeight.bold,
-              color: PdfColors.grey800,
+              color: PdfColors.blue800,
             ),
           ),
           pw.SizedBox(height: 8),
           pw.Text(
-            '1. Payment is due within 30 days of invoice date.',
-            style: const pw.TextStyle(fontSize: 10),
-          ),
-          pw.Text(
-            '2. Late payments may incur additional charges.',
-            style: const pw.TextStyle(fontSize: 10),
-          ),
-          pw.Text(
-            '3. All services are provided as per the agreed specifications.',
-            style: const pw.TextStyle(fontSize: 10),
-          ),
-          pw.Text(
-            '4. Warranty terms apply as per manufacturer guidelines.',
-            style: const pw.TextStyle(fontSize: 10),
-          ),
-          pw.Text(
-            '5. This invoice is generated electronically and is valid without signature.',
-            style: const pw.TextStyle(fontSize: 10),
-          ),
-          pw.SizedBox(height: 12),
-          pw.Text(
-            'Thank you for your business!',
+            'For any queries, please contact our support team.',
             style: pw.TextStyle(
               fontSize: 12,
-              fontWeight: pw.FontWeight.bold,
-              color: PdfColors.blue600,
+              color: PdfColors.grey600,
+            ),
+          ),
+          pw.SizedBox(height: 4),
+          pw.Text(
+            'Email: support@techserv.com | Phone: +1-800-TECHSERV',
+            style: pw.TextStyle(
+              fontSize: 10,
+              color: PdfColors.grey500,
             ),
           ),
         ],
@@ -570,28 +707,54 @@ class InvoiceGenerator {
   pw.Widget _buildPageFooter(pw.Context context) {
     return pw.Container(
       alignment: pw.Alignment.centerRight,
-      margin: const pw.EdgeInsets.only(top: 16),
+      margin: const pw.EdgeInsets.only(top: 1.0 * PdfPageFormat.cm),
       child: pw.Text(
         'Page ${context.pageNumber} of ${context.pagesCount}',
         style: pw.TextStyle(
           fontSize: 10,
-          color: PdfColors.grey600,
+          color: PdfColors.grey500,
         ),
       ),
     );
   }
 
-  Future<void> _downloadPDF(Uint8List pdfBytes, String filename) async {
-    // Create blob and download in web browser
+  Future<void> _downloadPDF(Uint8List pdfBytes, String fileName) async {
     final blob = html.Blob([pdfBytes], 'application/pdf');
     final url = html.Url.createObjectUrlFromBlob(blob);
     final anchor = html.document.createElement('a') as html.AnchorElement
       ..href = url
       ..style.display = 'none'
-      ..download = filename;
-    html.document.body?.children.add(anchor);
+      ..download = fileName;
+    html.document.body!.children.add(anchor);
     anchor.click();
-    html.document.body?.children.remove(anchor);
+    html.document.body!.children.remove(anchor);
     html.Url.revokeObjectUrl(url);
   }
+}
+
+// Example usage
+void main() async {
+  final invoiceData = InvoiceData(
+    queryId: 'QID-936C355DFCAD',
+    customerName: 'wne',
+    customerAddress: 'ghs',
+    companyName: 'gdf',
+    products: [
+      {
+        'name': 'Apple iPhone 15',
+        'price': 999.99,
+        'quantity': 1,
+      },
+      {
+        'name': 'Wireless Headphones',
+        'price': 199.99,
+        'quantity': 1,
+      },
+    ],
+    warrantyStatus: 'Before', // or 'After'
+    generatedDate: DateTime.now(),
+  );
+
+  final generator = InvoiceGenerator();
+  await generator.generatePDF(invoiceData);
 }

@@ -42,39 +42,176 @@ class _SignupScreenState extends State<SignupScreen> {
           ],
         ),
       );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Registration failed. Please try again.')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("Sign Up")),
-      body: Padding(
-        padding: EdgeInsets.all(16),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              TextFormField(decoration: InputDecoration(labelText: 'Full Name'), onChanged: (val) => formData["fullName"] = val),
-              TextFormField(decoration: InputDecoration(labelText: 'Date of Birth'), onChanged: (val) => formData["dob"] = val),
-              DropdownButtonFormField(
-                value: formData["gender"],
-                items: ['Male', 'Female'].map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
-                onChanged: (val) => setState(() => formData["gender"] = val as String),
-              ),
-              TextFormField(decoration: InputDecoration(labelText: 'Address'), onChanged: (val) => formData["address"] = val),
-              TextFormField(decoration: InputDecoration(labelText: 'Mobile Number'), keyboardType: TextInputType.phone, onChanged: (val) => formData["mobile"] = val),
-              TextFormField(decoration: InputDecoration(labelText: 'Password'), obscureText: true, onChanged: (val) => formData["password"] = val),
-              SizedBox(height: 20),
-              ElevatedButton(
-                child: Text("Sign Up"),
-                onPressed: () {
-                  if (_formKey.currentState!.validate()) registerUser();
-                },
-              ),
-            ],
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF1e3c72), Color(0xFF2a5298)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
           ),
         ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.symmetric(horizontal: 30),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  children: [
+                    Text(
+                      "Create Account",
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    SizedBox(height: 10),
+                    Text(
+                      "Sign up to get started",
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.white.withOpacity(0.8),
+                      ),
+                    ),
+                    SizedBox(height: 30),
+
+                    // Full Name
+                    buildInputField(
+                      label: "Full Name",
+                      onChanged: (val) => formData["fullName"] = val,
+                    ),
+
+                    // Date of Birth
+                    buildInputField(
+                      label: "Date of Birth",
+                      onChanged: (val) => formData["dob"] = val,
+                    ),
+
+                    // Gender
+                    DropdownButtonFormField<String>(
+                      value: formData["gender"],
+                      dropdownColor: Color(0xFF1e3c72),
+                      decoration: inputDecoration("Gender"),
+                      items: ['Male', 'Female', 'Binary', 'Others']
+                          .map((g) => DropdownMenuItem(
+                                value: g,
+                                child: Text(g, style: TextStyle(color: Colors.white)),
+                              ))
+                          .toList(),
+                      onChanged: (val) {
+                        setState(() => formData["gender"] = val!);
+                      },
+                    ),
+                    SizedBox(height: 16),
+
+                    // Address
+                    buildInputField(
+                      label: "Address",
+                      onChanged: (val) => formData["address"] = val,
+                    ),
+
+                    // Mobile Number
+                    buildInputField(
+                      label: "Mobile Number",
+                      keyboardType: TextInputType.phone,
+                      onChanged: (val) => formData["mobile"] = val,
+                    ),
+
+                    // Password
+                    buildInputField(
+                      label: "Password",
+                      obscureText: true,
+                      onChanged: (val) => formData["password"] = val,
+                    ),
+
+                    SizedBox(height: 30),
+
+                    ElevatedButton(
+                      onPressed: () {
+                        if (_formKey.currentState!.validate()) {
+                          registerUser();
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Color(0xFF1e3c72),
+                        padding: EdgeInsets.symmetric(horizontal: 80, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(25),
+                        ),
+                        elevation: 5,
+                      ),
+                      child: Text(
+                        "Sign Up",
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                    ),
+
+                    SizedBox(height: 20),
+
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pushReplacementNamed(context, '/login');
+                      },
+                      child: Text(
+                        "Already have an account? Login",
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget buildInputField({
+    required String label,
+    bool obscureText = false,
+    TextInputType keyboardType = TextInputType.text,
+    required Function(String) onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: TextFormField(
+        style: TextStyle(color: Colors.white),
+        obscureText: obscureText,
+        keyboardType: keyboardType,
+        decoration: inputDecoration(label),
+        validator: (val) => val == null || val.isEmpty ? 'Required' : null,
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  InputDecoration inputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: TextStyle(color: Colors.white.withOpacity(0.8)),
+      enabledBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: Colors.white.withOpacity(0.4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: Colors.white),
+        borderRadius: BorderRadius.circular(12),
       ),
     );
   }
